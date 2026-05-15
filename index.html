@@ -756,16 +756,16 @@ body { font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--te
         <h3>Welcome back</h3>
         <p>Sign in to manage your shop inventory</p>
         <div class="field-group">
-          <label class="field-label">Username</label>
-          <input class="field-input" id="l-user" type="text" placeholder="Your username" />
+          <label class="field-label">Email</label>
+          <input class="field-input" id="l-user" type="email" placeholder="your@email.com" />
         </div>
         <div class="field-group">
           <label class="field-label">Password</label>
           <input class="field-input" id="l-pass" type="password" placeholder="Your password" />
         </div>
-        <div class="auth-error" id="l-error">Incorrect username or password</div>
+        <div class="auth-error" id="l-error">Incorrect email or password</div>
         <button class="btn-main" onclick="doLogin()">Sign In</button>
-        <div class="auth-hint">Demo: admin / admin123</div>
+        <div class="auth-hint">Use your registered email & password</div>
       </div>
       <div id="form-register" style="display:none">
         <h3>Create account</h3>
@@ -775,8 +775,8 @@ body { font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--te
           <input class="field-input" id="r-name" type="text" placeholder="Your name" />
         </div>
         <div class="field-group">
-          <label class="field-label">Username</label>
-          <input class="field-input" id="r-user" type="text" placeholder="Choose a username" />
+          <label class="field-label">Email</label>
+          <input class="field-input" id="r-user" type="email" placeholder="your@email.com" />
         </div>
         <div class="field-group">
           <label class="field-label">Password</label>
@@ -1249,24 +1249,68 @@ body { font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--te
 
 <script>
 // ============================================================
-//  STATE
+//  SUPABASE CONFIG
 // ============================================================
+const SUPABASE_URL = 'https://akoemfgijxnpbszydimf.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_mO5nZh55AOiK5OrLChw-6g_HSSdiAaV';
 const ANTHROPIC_KEY = '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';
 
+// Supabase auth token (set after login)
+let sbToken = SUPABASE_KEY;
+
+function sbHeaders(extra = {}) {
+  return {
+    'apikey': SUPABASE_KEY,
+    'Authorization': `Bearer ${sbToken}`,
+    'Content-Type': 'application/json',
+    ...extra
+  };
+}
+
+async function dbGet(table, query = '') {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, { headers: sbHeaders() });
+  return r.json();
+}
+
+async function dbInsert(table, data) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: 'POST',
+    headers: sbHeaders({ 'Prefer': 'return=representation' }),
+    body: JSON.stringify(data)
+  });
+  return r.json();
+}
+
+async function dbUpdate(table, col, val, data) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, {
+    method: 'PATCH',
+    headers: sbHeaders({ 'Prefer': 'return=representation' }),
+    body: JSON.stringify(data)
+  });
+  return r.json();
+}
+
+async function dbDelete(table, col, val) {
+  await fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, {
+    method: 'DELETE', headers: sbHeaders()
+  });
+}
+
+// ============================================================
+//  STATE
+// ============================================================
 let store = {
-  users: { admin: { pass: 'admin123', name: 'Admin' } },
-  currentUser: null,
+  currentUser: null,   // { id, email, name }
   biz: null,
-  categories: [],       // [{name, stock}]
+  categories: [],
   items: [],
   sales: [],
-  nextId: 1,
   selectedSaleItem: null,
   chatHistory: [],
 };
 
 // ============================================================
-//  AUTH
+//  AUTH — now uses Supabase email/password
 // ============================================================
 function switchTab(t) {
   document.getElementById('tab-login').classList.toggle('active', t==='login');
@@ -1275,32 +1319,104 @@ function switchTab(t) {
   document.getElementById('form-register').style.display = t==='register' ? 'block' : 'none';
 }
 
-function doLogin() {
-  const u = document.getElementById('l-user').value.trim();
-  const p = document.getElementById('l-pass').value;
-  if (store.users[u] && store.users[u].pass === p) {
-    store.currentUser = u;
-    document.getElementById('l-error').style.display = 'none';
-    store.biz && store.biz.done ? showApp() : showOnboarding();
+async function doLogin() {
+  const email = document.getElementById('l-user').value.trim();
+  const pass  = document.getElementById('l-pass').value;
+  const errEl = document.getElementById('l-error');
+  if (!email || !pass) { errEl.textContent='Please enter email and password'; errEl.style.display='block'; return; }
+
+  // Show loading
+  const btn = document.querySelector('#form-login .btn-main');
+  btn.textContent = 'Signing in...'; btn.disabled = true;
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+      method: 'POST',
+      headers: { 'apikey': SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pass })
+    });
+    const data = await res.json();
+
+    if (data.access_token) {
+      sbToken = data.access_token;
+      store.currentUser = { id: data.user.id, email: data.user.email };
+      errEl.style.display = 'none';
+      await loadUserData(data.user.id);
+    } else {
+      errEl.textContent = 'Incorrect email or password';
+      errEl.style.display = 'block';
+    }
+  } catch(e) {
+    errEl.textContent = 'Connection error. Please try again.';
+    errEl.style.display = 'block';
+  }
+  btn.textContent = 'Sign In'; btn.disabled = false;
+}
+
+async function doRegister() {
+  const name  = document.getElementById('r-name').value.trim();
+  const email = document.getElementById('r-user').value.trim();
+  const pass  = document.getElementById('r-pass').value;
+  const err   = document.getElementById('r-error');
+  if (!name || !email || !pass) { err.textContent='Please fill all fields'; err.style.display='block'; return; }
+  if (pass.length < 6) { err.textContent='Password must be at least 6 characters'; err.style.display='block'; return; }
+
+  const btn = document.querySelector('#form-register .btn-main');
+  btn.textContent = 'Creating...'; btn.disabled = true;
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+      method: 'POST',
+      headers: { 'apikey': SUPABASE_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: pass })
+    });
+    const data = await res.json();
+
+    if (data.access_token) {
+      sbToken = data.access_token;
+      store.currentUser = { id: data.user.id, email, name };
+      err.style.display = 'none';
+      showOnboarding();
+    } else {
+      err.textContent = data.msg || data.error_description || 'Registration failed. Try a different email.';
+      err.style.display = 'block';
+    }
+  } catch(e) {
+    err.textContent = 'Connection error. Please try again.';
+    err.style.display = 'block';
+  }
+  btn.textContent = 'Create Account'; btn.disabled = false;
+}
+
+async function loadUserData(userId) {
+  // Load profile
+  const profiles = await dbGet('profiles', `id=eq.${userId}`);
+  if (profiles && profiles[0]) {
+    const p = profiles[0];
+    store.biz = { done: true, shopName: p.shop_name, bizType: p.biz_type_name, type: p.biz_type, city: p.city };
+    store.currentUser.name = p.full_name;
+    // Load all data
+    store.categories = await dbGet('categories', `user_id=eq.${userId}&order=created_at.asc`) || [];
+    store.items      = await dbGet('items',      `user_id=eq.${userId}&order=created_at.asc`) || [];
+    store.sales      = await dbGet('sales',      `user_id=eq.${userId}&order=created_at.asc`) || [];
+    showApp();
   } else {
-    document.getElementById('l-error').style.display = 'block';
+    // New user — go to onboarding
+    showOnboarding();
   }
 }
 
-function doRegister() {
-  const name = document.getElementById('r-name').value.trim();
-  const u = document.getElementById('r-user').value.trim();
-  const p = document.getElementById('r-pass').value;
-  const err = document.getElementById('r-error');
-  if (!name || !u || !p) { err.textContent = 'Please fill all fields'; err.style.display='block'; return; }
-  if (store.users[u]) { err.textContent = 'Username already taken'; err.style.display='block'; return; }
-  store.users[u] = { pass: p, name };
-  store.currentUser = u;
-  err.style.display = 'none';
-  showOnboarding();
+async function doLogout() {
+  await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+    method: 'POST', headers: sbHeaders()
+  });
+  sbToken = SUPABASE_KEY;
+  store.currentUser = null;
+  store.biz = null;
+  store.categories = []; store.items = []; store.sales = [];
+  document.getElementById('munshi-bar').style.display = 'none';
+  setScreen('auth');
 }
-
-function doLogout() { store.currentUser = null; setScreen('auth'); }
 
 document.getElementById('l-pass').addEventListener('keydown', e => { if (e.key==='Enter') doLogin(); });
 
@@ -1314,12 +1430,12 @@ function setScreen(s) {
 function showOnboarding() { setScreen('onboarding'); obGoStep(1); }
 function showApp() {
   setScreen('app');
-  const nm = store.users[store.currentUser].name;
+  const nm = store.currentUser.name || store.currentUser.email || 'Owner';
   document.getElementById('sb-ava').textContent = nm.charAt(0).toUpperCase();
   document.getElementById('sb-name').textContent = nm;
-  document.getElementById('sb-biz-name').textContent = store.biz.shopName;
-  document.getElementById('sb-biz-type').textContent = store.biz.type.toUpperCase();
-  document.getElementById('sb-role').textContent = store.biz.bizType;
+  document.getElementById('sb-biz-name').textContent = store.biz.shopName || 'My Shop';
+  document.getElementById('sb-biz-type').textContent = (store.biz.type || 'RETAIL').toUpperCase();
+  document.getElementById('sb-role').textContent = store.biz.bizType || 'Store Owner';
   populateCatSelects();
   refreshAll();
   navHistory = []; navHistoryIdx = -1;
@@ -1455,7 +1571,10 @@ function removeCat(i) {
   renderObCatList();
 }
 
-function launchApp() {
+async function launchApp() {
+  const btn = document.querySelector('#ob-step-3 .btn-accent');
+  btn.textContent = '⏳ Setting up...'; btn.disabled = true;
+
   store.biz = {
     done: true,
     bizType: obData.bizTypeName,
@@ -1464,18 +1583,44 @@ function launchApp() {
     ownerName: obData.ownerName,
     city: obData.city || '',
   };
-  store.users[store.currentUser].name = obData.ownerName;
-  seedItemsFromCategories();
+  store.currentUser.name = obData.ownerName;
+
+  // Save profile to Supabase
+  await dbInsert('profiles', {
+    id: store.currentUser.id,
+    username: store.currentUser.email,
+    full_name: obData.ownerName,
+    shop_name: obData.shopName,
+    biz_type: obData.bizType,
+    biz_type_name: obData.bizTypeName,
+    city: obData.city || '',
+    phone: obData.phone || '',
+    gst: obData.gst || '',
+  });
+
+  // Save categories to Supabase
+  for (const cat of store.categories) {
+    const result = await dbInsert('categories', {
+      user_id: store.currentUser.id,
+      name: cat.name,
+      stock: cat.stock || 0
+    });
+    if (result && result[0]) cat.id = result[0].id;
+  }
+
+  // Seed items from categories
+  await seedItemsFromCategories();
+
+  btn.textContent = '🚀 Launch My Dukaan'; btn.disabled = false;
   showApp();
   toast('Welcome to DukaanIQ! Your shop is ready. 🎉', 'ok');
 }
 
-function seedItemsFromCategories() {
-  // Create items from the categories with their opening stocks
-  store.categories.forEach((cat, idx) => {
+async function seedItemsFromCategories() {
+  for (const cat of store.categories) {
     if (cat.stock > 0) {
-      store.items.push({
-        id: store.nextId++,
+      const itemData = {
+        user_id: store.currentUser.id,
         name: cat.name + ' (Opening Stock)',
         category: cat.name,
         brand: 'Mixed',
@@ -1486,9 +1631,11 @@ function seedItemsFromCategories() {
         supplier: '',
         attrs: 'Opening stock entry',
         sold: 0,
-      });
+      };
+      const result = await dbInsert('items', itemData);
+      if (result && result[0]) store.items.push(result[0]);
     }
-  });
+  }
 }
 
 // ============================================================
@@ -1638,7 +1785,7 @@ function renderDashboard() {
   const recent = store.sales.slice(-8).reverse();
   tbl.innerHTML = recent.map(s => `
     <tr>
-      <td style="font-weight:600">${s.name}</td>
+      <td style="font-weight:600">${s.item_name || s.name || '—'}</td>
       <td><span class="cat-chip">${s.category}</span></td>
       <td>${s.qty}</td>
       <td style="font-family:'Fira Mono',monospace;font-size:11px;color:var(--text-muted)">${s.date}</td>
@@ -1684,7 +1831,7 @@ function renderInventory() {
   }).join('') || '<tr><td colspan="8"><div class="empty-state"><div class="empty-title">No items found</div><div class="empty-sub">Try adjusting filters or add new items</div></div></td></tr>';
 }
 
-function saveInlineStock(id) {
+async function saveInlineStock(id) {
   const inp = document.getElementById('stock-inp-'+id);
   const val = parseInt(inp.value);
   if (isNaN(val) || val < 0) { toast('Invalid quantity', 'err'); return; }
@@ -1692,6 +1839,7 @@ function saveInlineStock(id) {
   if (it) {
     const prev = it.stock;
     it.stock = val;
+    await dbUpdate('items', 'id', id, { stock: val });
     toast(`Stock updated: ${it.name} → ${val} units (was ${prev})`, 'ok');
     renderInventory();
     renderStats();
@@ -1705,12 +1853,16 @@ function filterInv() { renderInventory(); }
 // ============================================================
 //  ADD ITEM
 // ============================================================
-function addItem() {
+async function addItem() {
   const name = document.getElementById('ni-name').value.trim();
   const cat  = document.getElementById('ni-cat').value;
   if (!name || !cat) { toast('Item name and category are required', 'err'); return; }
-  store.items.push({
-    id: store.nextId++,
+
+  const btn = document.querySelector('#page-add-item .btn-forest');
+  btn.textContent = 'Saving...'; btn.disabled = true;
+
+  const itemData = {
+    user_id: store.currentUser.id,
     name, category: cat,
     brand:    document.getElementById('ni-brand').value.trim(),
     cprice:   parseFloat(document.getElementById('ni-cprice').value) || 0,
@@ -1720,12 +1872,20 @@ function addItem() {
     supplier: document.getElementById('ni-supplier').value.trim(),
     attrs:    document.getElementById('ni-attrs').value.trim(),
     sold: 0,
-  });
-  toast('Item added: ' + name, 'ok');
-  ['ni-name','ni-brand','ni-cprice','ni-sprice','ni-stock','ni-supplier','ni-attrs'].forEach(id => document.getElementById(id).value='');
-  document.getElementById('ni-thresh').value = '10';
-  document.getElementById('ni-cat').value = '';
-  refreshAll();
+  };
+
+  const result = await dbInsert('items', itemData);
+  if (result && result[0]) {
+    store.items.push(result[0]);
+    toast('Item added: ' + name, 'ok');
+    ['ni-name','ni-brand','ni-cprice','ni-sprice','ni-stock','ni-supplier','ni-attrs'].forEach(id => document.getElementById(id).value='');
+    document.getElementById('ni-thresh').value = '10';
+    document.getElementById('ni-cat').value = '';
+    refreshAll();
+  } else {
+    toast('Error saving item. Try again.', 'err');
+  }
+  btn.textContent = 'Save Item'; btn.disabled = false;
 }
 
 // ============================================================
@@ -1745,19 +1905,24 @@ function closeModal(e) {
     document.getElementById('modal-overlay').classList.remove('open');
 }
 
-function doUpdateStock() {
-  const id = parseInt(document.getElementById('modal-item-id').value);
+async function doUpdateStock() {
+  const id  = parseInt(document.getElementById('modal-item-id').value);
   const val = parseInt(document.getElementById('modal-stock-val').value);
   if (isNaN(val)||val<0) { toast('Invalid quantity','err'); return; }
   const it = store.items.find(x=>x.id===id);
-  if (it) { it.stock=val; toast('Stock updated to '+val,'ok'); }
+  if (it) {
+    it.stock = val;
+    await dbUpdate('items', 'id', id, { stock: val });
+    toast('Stock updated to '+val,'ok');
+  }
   closeModal();
   refreshAll();
   renderInventory();
 }
 
-function deleteItem(id) {
+async function deleteItem(id) {
   if (!confirm('Delete this item from inventory?')) return;
+  await dbDelete('items', 'id', id);
   store.items = store.items.filter(x=>x.id!==id);
   toast('Item removed','ok');
   refreshAll();
@@ -1803,24 +1968,42 @@ function renderSalesHistory() {
   if (!tbl) return;
   tbl.innerHTML = store.sales.slice().reverse().map(s => `
     <tr>
-      <td style="font-weight:600">${s.name}</td>
+      <td style="font-weight:600">${s.item_name || s.name || '—'}</td>
       <td><span class="cat-chip">${s.category}</span></td>
       <td style="font-family:'Fira Mono',monospace">${s.qty}</td>
-      <td style="font-family:'Fira Mono',monospace;color:var(--forest-light)">${s.sprice?'Rs.'+(s.qty*s.sprice).toLocaleString('en-IN'):'—'}</td>
+      <td style="font-family:'Fira Mono',monospace;color:var(--forest-light)">${s.revenue ? 'Rs.'+(s.revenue).toLocaleString('en-IN') : '—'}</td>
       <td style="font-family:'Fira Mono',monospace;font-size:11px;color:var(--text-muted)">${s.date}</td>
     </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--text-muted)">No sales recorded yet</td></tr>';
 }
 
-function recordSale() {
+async function recordSale() {
   const it = store.selectedSaleItem;
   if (!it) { toast('Select an item first','err'); return; }
   const qty  = parseInt(document.getElementById('sale-qty').value);
   const date = document.getElementById('sale-date').value;
   if (!qty||qty<1) { toast('Enter a valid quantity','err'); return; }
   if (qty>it.stock) { toast('Only '+it.stock+' units in stock','err'); return; }
+
+  // Update local state
   it.stock -= qty;
   it.sold  += qty;
-  store.sales.push({ itemId:it.id, name:it.name, category:it.category, brand:it.brand, qty, sprice:it.sprice, date });
+
+  // Save sale to Supabase
+  const saleData = {
+    user_id: store.currentUser.id,
+    item_id: it.id,
+    item_name: it.name,
+    category: it.category,
+    qty,
+    revenue: (it.sprice || 0) * qty,
+    date
+  };
+  const result = await dbInsert('sales', saleData);
+  if (result && result[0]) store.sales.push(result[0]);
+
+  // Update item stock in Supabase
+  await dbUpdate('items', 'id', it.id, { stock: it.stock, sold: it.sold });
+
   toast('Sale recorded: '+qty+' × '+it.name,'ok');
   store.selectedSaleItem = null;
   document.getElementById('sale-qty').value = '';
@@ -1871,22 +2054,26 @@ function renderManageCats() {
     </div>`).join('') || '<div style="color:var(--text-muted);font-size:13px;padding:20px 0">No categories added</div>';
 }
 
-function addCategoryManage() {
+async function addCategoryManage() {
   const v = document.getElementById('add-cat-manage').value.trim();
   if (!v) return;
   if (store.categories.find(c=>c.name.toLowerCase()===v.toLowerCase())) { toast('Category already exists','err'); return; }
-  store.categories.push({ name: v, stock: 0 });
-  document.getElementById('add-cat-manage').value = '';
-  populateCatSelects();
-  renderManageCats();
-  toast('Category added: '+v,'ok');
+  const result = await dbInsert('categories', { user_id: store.currentUser.id, name: v, stock: 0 });
+  if (result && result[0]) {
+    store.categories.push(result[0]);
+    document.getElementById('add-cat-manage').value = '';
+    populateCatSelects();
+    renderManageCats();
+    toast('Category added: '+v,'ok');
+  }
 }
 
-function deleteCategoryManage(i) {
-  const name = store.categories[i].name;
-  if (store.items.find(it=>it.category===name)) {
+async function deleteCategoryManage(i) {
+  const cat = store.categories[i];
+  if (store.items.find(it=>it.category===cat.name)) {
     if (!confirm('This category has items. Remove anyway?')) return;
   }
+  await dbDelete('categories', 'id', cat.id);
   store.categories.splice(i, 1);
   populateCatSelects();
   renderManageCats();
