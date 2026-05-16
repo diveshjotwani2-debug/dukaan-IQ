@@ -1252,7 +1252,7 @@ body { font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--te
 //  SUPABASE CONFIG
 // ============================================================
 const SUPABASE_URL = 'https://akoemfgijxnpbszydimf.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_mO5nZh55AOiK5OrLChw-6g_HSSdiAaV';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrb2VtZmdpanhucGJzenlkaW1mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4NTg4NTgsImV4cCI6MjA5NDQzNDg1OH0.hcfl1-BgJSW-3HWdlTDsC3wEWFdj384eXNSTpZivu8M';
 const ANTHROPIC_KEY = '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';
 
 // Supabase auth token (set after login)
@@ -1263,6 +1263,7 @@ function sbHeaders(extra = {}) {
     'apikey': SUPABASE_KEY,
     'Authorization': `Bearer ${sbToken}`,
     'Content-Type': 'application/json',
+    'X-Client-Info': 'dukaaniq/1.0',
     ...extra
   };
 }
@@ -1332,22 +1333,27 @@ async function doLogin() {
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
       method: 'POST',
-      headers: { 'apikey': SUPABASE_KEY, 'Content-Type': 'application/json' },
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'X-Client-Info': 'dukaaniq/1.0'
+      },
       body: JSON.stringify({ email, password: pass })
     });
+    if (!res.ok && res.status !== 400) throw new Error('status ' + res.status);
     const data = await res.json();
-
     if (data.access_token) {
       sbToken = data.access_token;
       store.currentUser = { id: data.user.id, email: data.user.email };
       errEl.style.display = 'none';
       await loadUserData(data.user.id);
     } else {
-      errEl.textContent = 'Incorrect email or password';
+      errEl.textContent = data.error_description || data.msg || 'Incorrect email or password';
       errEl.style.display = 'block';
     }
   } catch(e) {
-    errEl.textContent = 'Connection error. Please try again.';
+    console.error('Login error:', e);
+    errEl.textContent = 'Could not connect. Check internet and try again.';
     errEl.style.display = 'block';
   }
   btn.textContent = 'Sign In'; btn.disabled = false;
@@ -1367,11 +1373,15 @@ async function doRegister() {
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
       method: 'POST',
-      headers: { 'apikey': SUPABASE_KEY, 'Content-Type': 'application/json' },
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Content-Type': 'application/json',
+        'X-Client-Info': 'dukaaniq/1.0'
+      },
       body: JSON.stringify({ email, password: pass })
     });
+    if (!res.ok && res.status !== 400) throw new Error('status ' + res.status);
     const data = await res.json();
-
     if (data.access_token) {
       sbToken = data.access_token;
       store.currentUser = { id: data.user.id, email, name };
@@ -1382,7 +1392,8 @@ async function doRegister() {
       err.style.display = 'block';
     }
   } catch(e) {
-    err.textContent = 'Connection error. Please try again.';
+    console.error('Register error:', e);
+    err.textContent = 'Could not connect. Check internet and try again.';
     err.style.display = 'block';
   }
   btn.textContent = 'Create Account'; btn.disabled = false;
@@ -1476,7 +1487,7 @@ function obNext(step) {
     if (!sn || !ow) { toast('Please fill Shop Name and Owner Name', 'err'); return; }
     obData.shopName = sn; obData.ownerName = ow;
     obData.city = document.getElementById('ob-city').value.trim();
-    store.users[store.currentUser].name = ow;
+    store.currentUser.name = ow;
     obGoStep(3);
     loadQuickCats();
   }
