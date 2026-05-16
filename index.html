@@ -1253,7 +1253,7 @@ body { font-family: 'Outfit', sans-serif; background: var(--bg); color: var(--te
 // ============================================================
 const SUPABASE_URL = 'https://akoemfgijxnpbszydimf.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFrb2VtZmdpanhucGJzenlkaW1mIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg4NTg4NTgsImV4cCI6MjA5NDQzNDg1OH0.hcfl1-BgJSW-3HWdlTDsC3wEWFdj384eXNSTpZivu8M';
-const ANTHROPIC_KEY = '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';
+const GROQ_KEY = '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';
 
 // Supabase auth token (set after login)
 let sbToken = SUPABASE_KEY;
@@ -2193,59 +2193,189 @@ async function sendMessageToAI(userMsg) {
   store.chatHistory.push({ role: 'user', content: userMsg });
   addTypingIndicator();
 
-  const { systemPrompt, messages } = buildMessages(userMsg);
-
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_KEY,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: systemPrompt,
-        messages
-      })
-    });
-    const data = await res.json();
-    removeTypingIndicator();
-    if (data.content && data.content[0]) {
-      const reply = data.content[0].text;
-      store.chatHistory.push({ role: 'assistant', content: reply });
-      addChatMsg('ai', reply);
-    } else {
-      addChatMsg('ai', 'Sorry, I could not get a response. Please try again.');
-    }
-  } catch(e) {
-    removeTypingIndicator();
-    // Offline fallback
-    const fallback = generateOfflineAdvice(userMsg);
-    store.chatHistory.push({ role: 'assistant', content: fallback });
-    addChatMsg('ai', fallback);
-  }
-
+  const reply = await callGroqAI(userMsg, store.chatHistory);
+  removeTypingIndicator();
+  store.chatHistory.push({ role: 'assistant', content: reply });
+  addChatMsg('ai', reply);
   btn.disabled = false;
 }
 
-function generateOfflineAdvice(msg) {
-  const low = getLow();
-  const m = msg.toLowerCase();
-  if (m.includes('reorder') || m.includes('stock')) {
-    if (low.length > 0) {
-      return `Based on your inventory, here are your urgent reorder needs:\n\n${low.slice(0,3).map(it=>`**${it.name}** — Only ${it.stock} units left (minimum: ${it.threshold}). Reorder at least ${it.threshold * 3} units.`).join('\n')}\n\nI'd recommend contacting your suppliers today to avoid stockouts.`;
+function generateOfflineAdvice(msg) { return generateSmartAdvice(msg); }
+
+async function callGroqAI(userMsg, history = []) {
+  const inv = store.items.slice(0, 40).map(it =>
+    `${it.name} (${it.category}): ${it.stock} units in stock, threshold ${it.threshold}, sold ${it.sold||0}, price ₹${it.sprice||0}`
+  ).join('\n');
+  const low = getLow().map(it => `${it.name}: ${it.stock} left (min ${it.threshold})`).join(', ');
+  const topSellers = [...store.items].sort((a,b)=>(b.sold||0)-(a.sold||0)).slice(0,5).map(it=>`${it.name} (${it.sold||0} sold)`).join(', ');
+  const totalRev = store.sales.reduce((s,s2)=>s+(s2.revenue||0),0);
+
+  const systemPrompt = `You are Dukaan Munshi 🧠, a smart and friendly AI business advisor for Indian small shop owners. You speak simple English and give practical, actionable advice.
+
+SHOP INFO:
+- Shop name: ${store.biz?.shopName || 'the shop'}
+- Business type: ${store.biz?.bizType || 'retail store'}
+- Total items: ${store.items.length}
+- Total stock: ${store.items.reduce((s,it)=>s+it.stock,0)} units
+- Categories: ${store.categories.map(c=>c.name).join(', ') || 'none'}
+- Low stock items: ${low || 'none'}
+- Top sellers: ${topSellers || 'no sales yet'}
+- Total revenue: ₹${totalRev.toLocaleString('en-IN')}
+- Total sales: ${store.sales.length} transactions
+
+CURRENT INVENTORY:
+${inv || 'No items added yet'}
+
+Give short, helpful, friendly responses. Use bullet points and bold text. Use Indian business context (₹, supplier, dukaan, etc). Always refer to actual shop data above when answering.`;
+
+  const messages = [
+    ...history.slice(-8).map(h => ({ role: h.role, content: h.content })),
+    { role: 'user', content: userMsg }
+  ];
+
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 1024,
+        temperature: 0.7,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages
+        ]
+      })
+    });
+    const data = await res.json();
+    if (data.choices && data.choices[0]) {
+      return data.choices[0].message.content;
+    } else {
+      console.error('Groq error:', data);
+      return generateSmartAdvice(userMsg);
     }
-    return 'Great news! All your items are currently well-stocked. Keep monitoring daily and reorder when any item hits its minimum threshold.';
+  } catch(e) {
+    console.error('Groq fetch error:', e);
+    return generateSmartAdvice(userMsg);
   }
-  if (m.includes('sell') || m.includes('best')) {
-    const top = [...store.items].sort((a,b)=>b.sold-a.sold).slice(0,3);
-    if (top[0]?.sold > 0) return `Your **top selling items** are:\n\n${top.map((it,i)=>`${i+1}. **${it.name}** — ${it.sold} units sold`).join('\n')}\n\nMake sure these are always in stock. Consider ordering 2x your normal quantity for these.`;
-    return "You haven't recorded any sales yet. Start logging sales to get insights on your best performers!";
+}
+
+function generateSmartAdvice(msg) {
+  const m = msg.toLowerCase();
+  const low = getLow();
+  const items = store.items;
+  const sales = store.sales;
+  const cats = store.categories;
+  const biz = store.biz?.bizType || 'shop';
+  const shopName = store.biz?.shopName || 'your shop';
+  const totalStock = items.reduce((s,it) => s + it.stock, 0);
+  const totalRevenue = sales.reduce((s,s2) => s + (s2.revenue || 0), 0);
+  const topSellers = [...items].sort((a,b) => (b.sold||0)-(a.sold||0)).filter(it => it.sold > 0);
+  const slowMovers = [...items].filter(it => (it.sold||0) === 0 && it.stock > 0);
+
+  // ── GREETINGS ──
+  if (m.match(/^(hi|hello|hey|namaste|hlo|hii|good morning|good evening)/)) {
+    return `Namaste! 🙏 I'm **Dukaan Munshi**, your business advisor for **${shopName}**!\n\nI can help you with:\n- 📦 **Stock & inventory** questions\n- 📈 **Sales analysis** and trends\n- 💰 **Profit & pricing** advice\n- 🔴 **Low stock alerts** and reorder tips\n- 📊 **Business health** check\n\nAsk me anything about your ${biz}!`;
   }
-  return `I'm here to help with your ${store.biz?.bizType || 'shop'} inventory! Ask me about:\n- What to reorder\n- Your best sellers\n- Stock health\n- Pricing advice\n\nNote: AI connection is temporarily unavailable — reconnect to internet for live AI responses.`;
+
+  // ── LOW STOCK / REORDER ──
+  if (m.includes('reorder') || m.includes('low stock') || m.includes('khatam') || m.includes('finish') || m.includes('urgent') || m.includes('restock') || (m.includes('stock') && (m.includes('low') || m.includes('less') || m.includes('order')))) {
+    if (low.length === 0) return `✅ **Great news!** All items in **${shopName}** are well stocked right now.\n\nYou have **${totalStock.toLocaleString('en-IN')} total units** across ${cats.length} categories. Keep checking daily — I'll alert you when anything runs low!`;
+    const urgent = low.filter(it => it.stock <= Math.floor(it.threshold * 0.5));
+    const warning = low.filter(it => it.stock > Math.floor(it.threshold * 0.5));
+    let reply = `🔴 **Reorder Alert for ${shopName}!**\n\nYou have **${low.length} item(s)** that need attention:\n\n`;
+    if (urgent.length > 0) {
+      reply += `**⚠️ URGENT — Order TODAY:**\n${urgent.map(it => `• **${it.name}** — Only ${it.stock} left! (Minimum: ${it.threshold})\n  → Order at least ${it.threshold * 3} units from supplier`).join('\n')}\n\n`;
+    }
+    if (warning.length > 0) {
+      reply += `**🟡 Order This Week:**\n${warning.map(it => `• **${it.name}** — ${it.stock} units (Threshold: ${it.threshold})`).join('\n')}\n\n`;
+    }
+    reply += `💡 **Tip:** Always keep 3x your minimum threshold as safety stock to avoid losing sales!`;
+    return reply;
+  }
+
+  // ── BEST SELLERS ──
+  if (m.includes('best sell') || m.includes('top sell') || m.includes('most sell') || m.includes('popular') || m.includes('fast moving') || m.includes('chalti')) {
+    if (topSellers.length === 0) return `📊 No sales recorded yet for **${shopName}**.\n\nStart logging your daily sales and I'll track your best sellers for you! Go to the **Sales** page to record your first sale.`;
+    return `📈 **Best Sellers in ${shopName}:**\n\n${topSellers.slice(0,5).map((it,i) => `${['🥇','🥈','🥉','4️⃣','5️⃣'][i]} **${it.name}** — ${it.sold} units sold\n   Category: ${it.category} | Stock left: ${it.stock}`).join('\n\n')}\n\n💡 **Tip:** Make sure these are always in stock! Consider ordering **2x** your normal quantity for top sellers.`;
+  }
+
+  // ── SLOW MOVERS ──
+  if (m.includes('slow') || m.includes('not selling') || m.includes('dead stock') || m.includes('discount') || m.includes('offer') || m.includes('sale')) {
+    if (slowMovers.length === 0) return `✅ Great! All your items are moving. No dead stock in **${shopName}** right now!`;
+    return `🏷️ **Slow Moving Stock in ${shopName}:**\n\n${slowMovers.slice(0,5).map(it => `• **${it.name}** — ${it.stock} units (0 sales)\n  Category: ${it.category}`).join('\n')}\n\n**Suggestions to clear slow stock:**\n1. 🏷️ Run a **10-20% discount** offer for this week\n2. 📦 Bundle slow items with fast sellers\n3. 📢 Promote on WhatsApp to regular customers\n4. ↩️ Check if supplier accepts returns\n\n💡 Dead stock blocks your cash — better to sell at small loss than keep it!`;
+  }
+
+  // ── PROFIT / REVENUE ──
+  if (m.includes('profit') || m.includes('revenue') || m.includes('income') || m.includes('earning') || m.includes('kamai') || m.includes('margin')) {
+    const avgMargin = items.filter(it => it.cprice > 0 && it.sprice > 0).map(it => ((it.sprice - it.cprice) / it.sprice * 100).toFixed(1));
+    const avgM = avgMargin.length > 0 ? (avgMargin.reduce((a,b)=>parseFloat(a)+parseFloat(b),0)/avgMargin.length).toFixed(1) : null;
+    let reply = `💰 **Profit Summary for ${shopName}:**\n\n`;
+    reply += `• Total revenue recorded: **₹${totalRevenue.toLocaleString('en-IN')}**\n`;
+    reply += `• Total sales transactions: **${sales.length}**\n`;
+    if (avgM) reply += `• Average profit margin: **${avgM}%**\n`;
+    reply += `\n**Ways to improve profit margins:**\n1. 📦 Buy in bulk to get better supplier rates\n2. 🏷️ Review pricing — small increases on fast movers help a lot\n3. 🔄 Reduce dead stock — it's blocked capital\n4. ⭐ Focus on high-margin items in ${cats.map(c=>c.name).slice(0,2).join(', ')}\n5. 💳 Track every sale to understand what's really profitable`;
+    return reply;
+  }
+
+  // ── INVENTORY HEALTH CHECK ──
+  if (m.includes('health') || m.includes('check') || m.includes('summary') || m.includes('status') || m.includes('overview') || m.includes('report')) {
+    const good = items.filter(it => getStatus(it) === 'good').length;
+    const warn = items.filter(it => getStatus(it) === 'warn').length;
+    const bad  = low.length;
+    const healthScore = items.length > 0 ? Math.round(((good + warn*0.5) / items.length) * 100) : 100;
+    return `📋 **Inventory Health Check — ${shopName}**\n\n**Overall Score: ${healthScore}/100** ${healthScore >= 80 ? '🟢 Healthy' : healthScore >= 60 ? '🟡 Needs Attention' : '🔴 Critical'}\n\n📊 **Stock Status:**\n• ✅ In Stock (Good): ${good} items\n• ⚠️ Medium (Watch): ${warn} items\n• 🔴 Low Stock (Urgent): ${bad} items\n\n📦 **Inventory Snapshot:**\n• Total items: ${items.length}\n• Total units: ${totalStock.toLocaleString('en-IN')}\n• Categories: ${cats.length}\n• Total sales: ${sales.length} transactions\n\n${bad > 0 ? `🚨 **Action needed:** ${bad} item(s) below minimum threshold — reorder now!` : '✅ No urgent reorders needed right now.'}`;
+  }
+
+  // ── PRICING ──
+  if (m.includes('price') || m.includes('pricing') || m.includes('rate') || m.includes('charge') || m.includes('daam')) {
+    const priced = items.filter(it => it.sprice > 0);
+    const unpriced = items.filter(it => !it.sprice || it.sprice === 0);
+    let reply = `💲 **Pricing Tips for ${shopName}:**\n\n`;
+    if (unpriced.length > 0) reply += `⚠️ **${unpriced.length} items have no selling price set** — fix this first!\nItems: ${unpriced.slice(0,3).map(it=>it.name).join(', ')}${unpriced.length>3?'...':''}\n\n`;
+    reply += `**Smart Pricing Strategy:**\n1. 🎯 Set prices = cost + minimum 20-30% margin\n2. 📊 Check competitor prices in your area\n3. 🔝 Premium products can have 40-60% margin\n4. 📉 High-volume items can have lower margin (10-15%)\n5. 🏷️ Use round numbers (₹99, ₹199) — customers prefer them\n\n💡 Go to **Inventory** and set selling prices for all items to track profit accurately!`;
+    return reply;
+  }
+
+  // ── CATEGORIES ──
+  if (m.includes('categor') || m.includes('department') || m.includes('section')) {
+    if (cats.length === 0) return `You haven't set up any categories yet! Go to **Categories** in the sidebar to add your product categories.`;
+    const catData = cats.map(c => {
+      const catItems = items.filter(it => it.category === c.name);
+      const catStock = catItems.reduce((s,it)=>s+it.stock,0);
+      return `• **${c.name}**: ${catItems.length} products, ${catStock} units`;
+    });
+    return `📁 **Categories in ${shopName}:**\n\n${catData.join('\n')}\n\n💡 Tip: Keep each category well-stocked. Your biggest category by stock is **${cats[0]?.name}**.`;
+  }
+
+  // ── SUPPLIER ──
+  if (m.includes('supplier') || m.includes('vendor') || m.includes('party') || m.includes('purchase') || m.includes('buy')) {
+    const withSupplier = items.filter(it => it.supplier);
+    return `🤝 **Supplier Tips for ${shopName}:**\n\n${withSupplier.length > 0 ? `You have suppliers linked to ${withSupplier.length} items.\n\n` : ''}**Good supplier practices:**\n1. 📱 Always compare prices from 2-3 suppliers\n2. 🗓️ Order before stock hits minimum threshold\n3. 💸 Negotiate bulk discounts for fast sellers\n4. 📋 Keep supplier contact details updated in each item\n5. ⏰ Track lead time — some suppliers take 2-5 days\n\n💡 Add supplier info to items in your **Inventory** for easy reorder reference!`;
+  }
+
+  // ── SALES TIPS ──
+  if (m.includes('sell more') || m.includes('increase sale') || m.includes('grow') || m.includes('business') || m.includes('customer') || m.includes('graha')) {
+    return `📈 **How to Grow ${shopName}:**\n\n**Immediate actions:**\n1. 📱 Share daily deals on WhatsApp Business\n2. 🏷️ Put slow stock on 15% discount this week\n3. ⭐ Ask happy customers for Google reviews\n4. 📦 Always ensure top 5 sellers are in stock\n\n**This month:**\n1. 🤝 Build relationship with 2-3 new suppliers\n2. 📊 Track which items give best profit margin\n3. 🎁 Offer small loyalty reward to repeat customers\n4. 📋 Keep accurate stock to never lose a sale\n\n💡 The #1 reason shops lose customers: **out of stock items**. Use DukaanIQ alerts to prevent this!`;
+  }
+
+  // ── HOW TO USE APP ──
+  if (m.includes('how to') || m.includes('kaise') || m.includes('help') || m.includes('use') || m.includes('tutorial') || m.includes('guide')) {
+    return `📱 **How to use DukaanIQ:**\n\n1. **Dashboard** — See your shop overview at a glance\n2. **Inventory** — Add/edit all your products with stock levels\n3. **Add Item** — Add new products to your shop\n4. **Record Sale** — Log every sale to track revenue\n5. **Low Stock** — See items that need reordering\n6. **Categories** — Manage your product categories\n7. **Reports** — Charts showing sales trends\n8. **AI Chat (me!)** — Ask anything about your business\n\n💡 **Pro tip:** Add all your items first, then start logging sales daily for best insights!`;
+  }
+
+  // ── SPECIFIC ITEM QUERY ──
+  const matchedItem = items.find(it => m.includes(it.name.toLowerCase()));
+  if (matchedItem) {
+    const st = getStatus(matchedItem);
+    return `📦 **${matchedItem.name}** — Details:\n\n• Category: ${matchedItem.category}\n• Stock: **${matchedItem.stock} units**\n• Status: ${st === 'good' ? '✅ Well stocked' : st === 'warn' ? '⚠️ Medium — watch this' : '🔴 LOW STOCK — reorder now!'}\n• Min threshold: ${matchedItem.threshold} units\n• Sold so far: ${matchedItem.sold || 0} units\n${matchedItem.sprice ? `• Selling price: ₹${matchedItem.sprice}` : ''}\n${matchedItem.supplier ? `• Supplier: ${matchedItem.supplier}` : ''}\n\n${st === 'bad' ? `🚨 **Reorder urgently!** Only ${matchedItem.stock} units left. Order at least ${matchedItem.threshold * 3} units.` : st === 'warn' ? `⚠️ Stock getting low. Consider reordering ${matchedItem.threshold * 2} units soon.` : `✅ Stock is good. Next reorder when it drops below ${matchedItem.threshold} units.`}`;
+  }
+
+  // ── DEFAULT ──
+  return `🤔 I'm not sure about that, but here's what I can help you with for **${shopName}**:\n\n• "**What should I reorder?**" — urgent stock alerts\n• "**Best selling items**" — top performers\n• "**Health check**" — full inventory report\n• "**How to improve profit?**" — margin tips\n• "**Slow movers**" — items to discount\n• "**How to grow my business?**" — growth tips\n• Ask about any specific item by name!\n\nJust type your question in simple English! 😊`;
 }
 
 function chatKeyDown(e) {
@@ -2395,28 +2525,10 @@ async function sendMunshiBarMessage() {
   munshiBarHistory.push({ role: 'user', content: userMsg });
   addMunshiBarTyping();
 
-  const inv = store.items.slice(0, 30).map(it => `${it.name} (${it.category}): ${it.stock} units, threshold ${it.threshold}`).join('\n');
-  const low = getLow().slice(0, 8).map(it => `${it.name}: ${it.stock} left`).join(', ');
-  const systemPrompt = `You are Dukaan Munshi, an AI business advisor for Indian small shop owners. The owner's shop is "${store.biz?.shopName || 'their shop'}", a ${store.biz?.bizType || 'retail'} store. Give short, practical, actionable advice in a friendly tone. Use simple English, occasionally use Indian business terms. Current inventory:\n${inv || 'No items yet'}\nLow stock items: ${low || 'None'}`;
-
-  const messages = munshiBarHistory.slice(-10);
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 800, system: systemPrompt, messages })
-    });
-    const data = await res.json();
-    removeMunshiBarTyping();
-    const reply = (data.content && data.content[0]) ? data.content[0].text : 'Sorry, I could not respond right now. Please try again.';
-    munshiBarHistory.push({ role: 'assistant', content: reply });
-    addMunshiBarMsg('ai', reply);
-  } catch(e) {
-    removeMunshiBarTyping();
-    const fallback = generateOfflineAdvice(userMsg);
-    munshiBarHistory.push({ role: 'assistant', content: fallback });
-    addMunshiBarMsg('ai', fallback);
-  }
+  const reply = await callGroqAI(userMsg, munshiBarHistory);
+  removeMunshiBarTyping();
+  munshiBarHistory.push({ role: 'assistant', content: reply });
+  addMunshiBarMsg('ai', reply);
   btn.disabled = false;
 }
 </script>
